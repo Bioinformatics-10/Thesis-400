@@ -6,3 +6,24 @@ sudo chown $USER:$USER /mnt/d/Thesis/demo/demo.fastq
 
 ##code for quality control
 fastqc /mnt/d/Thesis/demo/demo.fastq
+
+#Trim the data
+trimmomatic SE -threads 4 \
+/mnt/d/Thesis/demo/demo.fastq \
+/mnt/d/Thesis/demo/demo_trimmed.fastq \
+TRAILING:10 \
+-phred33
+
+fastqc /mnt/d/Thesis/demo/demo_trimmed.fastq -o /mnt/d/Thesis/demo/
+
+#Align reads : HISAT2
+##Download hisat2 gene files
+wget https://genome-idx.s3.amazonaws.com/hisat/grch38_genome.tar.gz
+##Extract it
+tar -xvzf grch38_genome.tar.gz
+
+##then command
+hisat2 -q --rna-strandness R \
+-x /mnt/d/Thesis/HISAT2/grch38/GRCh38.genome \
+-U /mnt/d/Thesis/demo/demo_trimmed.fastq | \
+samtools sort -o /mnt/d/Thesis/HISAT2/demo_trimmed.bam
