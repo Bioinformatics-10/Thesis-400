@@ -1,0 +1,8 @@
+# Quality control of fastq file 
+
+## firstly change the user from root
+sudo chown $USER:$USER /mnt/d/Thesis/demo/demo.fastq
+
+
+##code for quality control
+fastqc /mnt/d/Thesis/demo/demo.fastq
