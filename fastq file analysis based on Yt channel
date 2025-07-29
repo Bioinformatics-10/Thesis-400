@@ -27,3 +27,10 @@ hisat2 -q --rna-strandness R \
 -x /mnt/d/Thesis/HISAT2/grch38/GRCh38.genome \
 -U /mnt/d/Thesis/demo/demo_trimmed.fastq | \
 samtools sort -o /mnt/d/Thesis/HISAT2/demo_trimmed.bam
+
+
+#get featureCounts data
+featureCounts -S 2 \
+  -a /mnt/d/Thesis/hg38/Homo_sapiens.GRCh38.106.gtf \
+  -o /mnt/d/Thesis/demo/joy_new/ERR9134329_featurecounts.txt \
+  /mnt/d/Thesis/demo/joy_new/demo_aligned.bam
