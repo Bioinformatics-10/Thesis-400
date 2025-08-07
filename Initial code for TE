@@ -1,0 +1,59 @@
+#!/bin/bash
+
+# Set variables
+FASTQ="/mnt/d/Thesis/demo/TE_1/ERR9134349.fastq"
+TRIMMED="/mnt/d/Thesis/demo/TE_1/ERR9134349_trimmed.fastq"
+BAM="/mnt/d/Thesis/demo/TE_1/demo_aligned.bam"
+GTF="/mnt/d/Thesis/TE_gtf/hg38_TE.gtf"  # <- make sure this is a TE-specific GTF file
+OUT_TXT="/mnt/d/Thesis/demo/TE_1/ERR9134349_TE_featurecounts.txt"
+OUT_CSV="/mnt/d/Thesis/demo/TE_1/ERR9134349_TE_featurecounts.csv"
+OUT_XLSX="/mnt/d/Thesis/demo/TE_1/ERR9134349_TE_featurecounts.xlsx"
+FILTERED_CSV="/mnt/d/Thesis/demo/TE_1/ERR9134349_TE_only.csv"
+FILTERED_XLSX="/mnt/d/Thesis/demo/TE_1/ERR9134349_TE_only.xlsx"
+
+# Change ownership (if needed)
+sudo chown $USER:$USER "$FASTQ"
+
+# Step 1: Quality control before trimming
+fastqc "$FASTQ" -o /mnt/d/Thesis/demo/TE_1
+
+# Step 2: Trimming
+trimmomatic SE -threads 4 \
+  "$FASTQ" "$TRIMMED" TRAILING:10 -phred33
+
+# Step 3: Quality control after trimming
+fastqc "$TRIMMED" -o /mnt/d/Thesis/demo/TE_1
+
+# Step 4: Align reads to genome
+hisat2 -q --rna-strandness R \
+  -x /mnt/d/Thesis/HISAT2/grch38/grch38/genome \
+  -U "$TRIMMED" | samtools sort -o "$BAM"
+
+# Step 5: Index the BAM
+samtools index "$BAM"
+
+# Step 6: TE-specific feature counting
+featureCounts -T 4 -s 2 \
+  -a "$GTF" \
+  -o "$OUT_TXT" \
+  "$BAM"
+
+# Step 7: Convert feature count to CSV and Excel
+python3 -c "
+import pandas as pd
+df = pd.read_csv('$OUT_TXT', sep='\t', comment='#')
+df.to_csv('$OUT_CSV', index=False)
+df.to_excel('$OUT_XLSX', index=False)
+print('CSV and Excel files saved.')
+"
+
+# Step 8 (Optional): Filter TE-specific rows like LINE1, Alu, etc.
+python3 -c "
+import pandas as pd
+df = pd.read_csv('$OUT_CSV')
+te_keywords = ['LINE', 'SINE', 'ERV', 'LTR', 'Alu']
+df_filtered = df[df['Geneid'].str.contains('|'.join(te_keywords), na=False, case=False)]
+df_filtered.to_csv('$FILTERED_CSV', index=False)
+df_filtered.to_excel('$FILTERED_XLSX', index=False)
+print('Filtered TE-only CSV and Excel saved.')
+"
