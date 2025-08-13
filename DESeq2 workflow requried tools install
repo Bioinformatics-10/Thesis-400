@@ -38,3 +38,90 @@ head(airway)
 
 # command show
 TURE
+
+
+
+
+## convert count data into excle from text file
+# Read the text file (assuming tab-separated from featureCounts)
+df <- read.table("D:/Thesis/demo/10_data/ERR9134346_featurecounts.txt",
+                 header = TRUE, sep = "\t")
+
+# Write to CSV
+write.csv(df, "D:/Thesis/demo/10_data/ERR9134346_featurecounts.csv",
+          row.names = FALSE)
+
+
+
+
+
+
+## Combine all count all datas
+library(tidyverse)
+
+# Folder containing all your featureCounts CSV files
+data_folder <- "D:/Thesis/demo/deg_data"
+
+# List all CSV files in the folder (adjust pattern if needed)
+files <- list.files(path = data_folder, pattern = "_featurecounts\\.csv$", full.names = TRUE)
+
+# Function to read and keep only Geneid + counts column
+read_counts <- function(file) {
+  df <- read.csv(file)
+  # Keep Geneid and the last column (counts)
+  df <- df[, c("Geneid", colnames(df)[ncol(df)])]
+  # Rename counts column to sample name (filename without extension)
+  colnames(df)[2] <- tools::file_path_sans_ext(basename(file))
+  return(df)
+}
+
+# Read all files into a list of dataframes
+df_list <- lapply(files, read_counts)
+
+# Merge all dataframes by Geneid
+merged_counts <- reduce(df_list, full_join, by = "Geneid")
+
+# Set Geneid as row names
+rownames(merged_counts) <- merged_counts$Geneid
+merged_counts <- merged_counts[, -1]
+
+# Save merged matrix
+write.csv(merged_counts, file.path(data_folder, "all_counts_matrix.csv"), row.names = TRUE)
+
+print("✅ Merged counts matrix saved to all_counts_matrix.csv")
+
+
+
+## Make calData
+library(tidyverse)  # loads dplyr, readr, etc.
+library(purrr)      # make sure reduce() is available
+
+# Folder containing all your featureCounts CSV files
+data_folder <- "D:/Thesis/demo/deg_data"
+
+# List all CSV files in the folder
+files <- list.files(path = data_folder, pattern = "_featurecounts\\.csv$", full.names = TRUE)
+
+# Function to read and keep only Geneid + counts column
+read_counts <- function(file) {
+  df <- read.csv(file)
+  df <- df[, c("Geneid", colnames(df)[ncol(df)])]
+  colnames(df)[2] <- tools::file_path_sans_ext(basename(file))
+  return(df)
+}
+
+# Read all files into a list
+df_list <- lapply(files, read_counts)
+
+# Merge all dataframes by Geneid using purrr::reduce
+merged_counts <- purrr::reduce(df_list, full_join, by = "Geneid")
+
+# Set Geneid as row names
+rownames(merged_counts) <- merged_counts$Geneid
+merged_counts <- merged_counts[, -1]
+
+# Save merged matrix
+write.csv(merged_counts, file.path(data_folder, "all_counts_matrix.csv"), row.names = TRUE)
+
+print("✅ Merged counts matrix saved to all_counts_matrix.csv")
+
