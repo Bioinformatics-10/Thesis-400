@@ -1,0 +1,40 @@
+##download DESeq2 in R
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+BiocManager::install("DESeq2")
+library(DESeq2)
+
+# check my DESeq2 is sucessfully installed
+"DESeq2" %in% rownames(installed.packages())
+library(DESeq2)
+
+# See the version
+packageVersion("DESeq2")
+
+#command show
+"TRUE"
+"Version"
+
+
+## Install tidyverse
+install.packages("tidyverse")
+library(tidyverse) 
+
+#check tidyverse is installed
+"tidyverse" %in% rownames(installed.packages())
+packageVersion("tidyverse")
+
+
+## Instal airway
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+BiocManager::install("airway")
+library(airway)
+data("airway")
+head(airway)
+
+# check install is okey
+"airway" %in% rownames(installed.packages())
+
+# command show
+TURE
