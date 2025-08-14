@@ -1,0 +1,34 @@
+# script to run survival analysis using TCGA data
+# setwd("C:/Users/HP/Documents")
+
+
+library(TCGAbiolinks)
+clinical_paad <- GDCquery_clinic(project = "TCGA-PAAD", type = "clinical")
+# if i want to run my downloaded clinical data.csv
+clinical_paad <- read.csv("my_clinical_data.csv", stringsAsFactors = FALSE)
+# if i want to run my downloaded clinical data.xlsx
+library(readxl)
+clinical_paad <- read_excel("my_clinical_data.xlsx")
+
+any(colnames(clinical_paad) %in% c("vital_status", "days_to_last_follow_up", "days_to_death"))
+which(colnames(clinical_paad) %in% c("vital_status", "days_to_last_follow_up", "days_to_death"))
+clinical_paad[,c(50,60,62)]
+
+# looking at some variables associated with survival 
+table(clinical_paad$vital_status)
+
+# days_to_death, that is the number of days passed from the initial diagnosis to the patient’s death (clearly, this is only relevant for dead patients)
+# days_to_last_follow_up that is the number of days passed from the initial diagnosis to the last visit.
+
+# change certain values the way they are encoded
+# for this step we need to run clinical_paad$deceased then in console write it table(clinical_paad$deceased)
+clinical_paad$deceased <- ifelse(clinical_paad$vital_status == "Alive", FALSE, TRUE)
+
+# create an "overall survival" variable that is equal to days_to_death
+# for dead patients, and to days_to_last_follow_up for patients who
+# are still alive
+
+clinical_paad$overall_survival <- ifelse(clinical_paad$vital_status == "Alive",
+                                         clinical_paad$days_to_last_follow_up,
+                                         clinical_paad$days_to_death)
+
