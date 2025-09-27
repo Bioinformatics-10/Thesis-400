@@ -1,127 +1,213 @@
-##download DESeq2 in R
-if (!requireNamespace("BiocManager", quietly = TRUE))
-    install.packages("BiocManager")
-BiocManager::install("DESeq2")
 library(DESeq2)
-
-# check my DESeq2 is sucessfully installed
-"DESeq2" %in% rownames(installed.packages())
-library(DESeq2)
-
-# See the version
-packageVersion("DESeq2")
-
-#command show
-"TRUE"
-"Version"
-
-
-## Install tidyverse
-install.packages("tidyverse")
-library(tidyverse) 
-
-#check tidyverse is installed
-"tidyverse" %in% rownames(installed.packages())
-packageVersion("tidyverse")
-
-
-## Instal airway
-if (!requireNamespace("BiocManager", quietly = TRUE))
-    install.packages("BiocManager")
-BiocManager::install("airway")
-library(airway)
-data("airway")
-head(airway)
-
-# check install is okey
-"airway" %in% rownames(installed.packages())
-
-# command show
-TURE
-
-
-
-
-## convert count data into excle from text file
-# Read the text file (assuming tab-separated from featureCounts)
-df <- read.table("D:/Thesis/demo/10_data/ERR9134346_featurecounts.txt",
-                 header = TRUE, sep = "\t")
-
-# Write to CSV
-write.csv(df, "D:/Thesis/demo/10_data/ERR9134346_featurecounts.csv",
-          row.names = FALSE)
-
-
-
-
-
-
-## Combine all count all datas
+library(RColorBrewer)
+library(pheatmap)
 library(tidyverse)
+library(ggplot2)
+library(matrixStats)  # for rowVars()
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(enrichplot)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(enrichplot)
+BiocManager::install("KEGG.db")
+library(KEGG.db)
+library(stringr)
+# ----------------------------
+# Load data
+# ----------------------------
+samples <- read.csv("D:/full_pipeline/samples.csv", row.names = 1, check.names = FALSE)
+metadata <- read.csv("D:/full_pipeline/metadata.csv", row.names = 1)
 
-# Folder containing all your featureCounts CSV files
-data_folder <- "D:/Thesis/demo/deg_data"
+# Align samples and metadata
+common <- intersect(colnames(samples), rownames(metadata))
+samples <- samples[, common]
+metadata <- metadata[common, ]
+all(colnames(samples) == rownames(metadata))  # should be TRUE
 
-# List all CSV files in the folder (adjust pattern if needed)
-files <- list.files(path = data_folder, pattern = "_featurecounts\\.csv$", full.names = TRUE)
+# ----------------------------
+# Metadata factors
+# ----------------------------
+metadata$tumor_grade <- factor(metadata$tumor_grade)
 
-# Function to read and keep only Geneid + counts column
-read_counts <- function(file) {
-  df <- read.csv(file)
-  # Keep Geneid and the last column (counts)
-  df <- df[, c("Geneid", colnames(df)[ncol(df)])]
-  # Rename counts column to sample name (filename without extension)
-  colnames(df)[2] <- tools::file_path_sans_ext(basename(file))
-  return(df)
+# ----------------------------
+# Filtering step
+# ----------------------------
+keep <- rowSums(samples >= 10) >= 2
+samples <- samples[keep, ]
+cat("Genes kept after filtering:", sum(keep), "\n")
+
+# ----------------------------
+# DESeq2 setup
+# ----------------------------
+dds_samples <- DESeqDataSetFromMatrix(
+  countData = samples,
+  colData = metadata,
+  design = ~ tumor_grade   # adjust for batch effect
+)
+
+# Normalization
+dds_samples <- estimateSizeFactors(dds_samples)
+samples_normalized <- counts(dds_samples, normalized = TRUE)
+
+# Variance stabilizing transformation
+vsd_samples <- vst(dds_samples, blind = TRUE)
+vsd_mat_samples <- assay(vsd_samples)
+
+# ----------------------------
+# Run DESeq2 analysis
+# ----------------------------
+dds_samples <- DESeq(dds_samples)
+
+# Dispersion plot
+png(filename = "D:/full_pipeline/dispersion_plot.png", width = 1200, height = 800, res = 150)
+plotDispEsts(dds_samples)
+dev.off()
+
+# Results
+samples_res <- results(
+  dds_samples, 
+  contrast = c("tumor_grade", "G2", "0"), 
+  alpha = 0.05, 
+  lfcThreshold = 0.32
+)
+
+# Shrink LFC
+res_shrink <- lfcShrink(
+  dds_samples, 
+  coef = "tumor_grade_G2_vs_0", 
+  type = "apeglm"
+)
+
+# Save results
+samples_res_all <- data.frame(samples_res)
+samples_res_sig <- subset(samples_res_all, padj < 0.05)
+
+# ----------------------------
+# Plots
+# ----------------------------
+
+# 1. Correlation heatmap
+png("D:/full_pipeline/Heatmap_correlation_samples.png", width = 1200, height = 800, res = 150)
+pheatmap(cor(vsd_mat_samples),
+         annotation = select(metadata, tumor_grade),
+         main = "Sample Correlation Heatmap (tumor_grade)")
+dev.off()
+
+# 2. MA plot
+png("D:/full_pipeline/MA_plot_samples.png", width = 1200, height = 800, res = 150)
+plotMA(samples_res, alpha = 0.05, main = "MA Plot of Samples Results")
+dev.off()
+
+# 3. Volcano plot
+samples_res_all_clean <- samples_res_all %>% 
+  filter(!is.na(log2FoldChange) & !is.na(padj)) %>%
+  mutate(threshold = padj < 0.05)
+
+volcano_plot <- ggplot(samples_res_all_clean) + 
+  geom_point(aes(x = log2FoldChange, y = -log10(padj), color = threshold)) + 
+  xlab("log2 fold change") + 
+  ylab("-log10 adjusted p-value") + 
+  theme(legend.position = "none", 
+        plot.title = element_text(size = rel(1.5), hjust = 0.5), 
+        axis.title = element_text(size = rel(1.25))) +
+  ggtitle("Volcano Plot of Samples Results")
+
+ggsave("D:/full_pipeline/Volcano_plot_samples.png", plot = volcano_plot, width = 8, height = 6, dpi = 300)
+
+
+# Heatmap of significant genes
+if (nrow(samples_res_sig) > 0) {
+  # Subset normalized counts to significant genes
+  sig_norm_counts_samples <- samples_normalized[rownames(samples_res_sig), ]
+  
+  # Remove genes with zero variance
+  sig_norm_counts_samples <- sig_norm_counts_samples[rowVars(sig_norm_counts_samples) > 0, ]
+  
+  if (nrow(sig_norm_counts_samples) > 0) {
+    heat_colors <- brewer.pal(n = 6, name = "YlOrRd")
+    
+    pheatmap(
+      sig_norm_counts_samples, 
+      color = heat_colors, 
+      cluster_rows = TRUE, 
+      show_rownames = FALSE,
+      annotation = select(metadata, tumor_grade, project_id),
+      scale = "row",
+      filename = "D:/full_pipeline/Heatmap_sig_genes.png",
+      width = 10, height = 8
+    )
+  } else {
+    cat("No significant genes with non-zero variance to plot.\n")
+  }
+} else {
+  cat("No significant genes found (padj < 0.05).\n")
 }
 
-# Read all files into a list of dataframes
-df_list <- lapply(files, read_counts)
 
-# Merge all dataframes by Geneid
-merged_counts <- reduce(df_list, full_join, by = "Geneid")
+# ----------------------------
+# Top genes
+# ----------------------------
+samples_sig <- subset(samples_res, padj < 0.05) %>%
+  data.frame() %>%
+  rownames_to_column(var = "geneID")
 
-# Set Geneid as row names
-rownames(merged_counts) <- merged_counts$Geneid
-merged_counts <- merged_counts[, -1]
+top6_genes <- samples_sig %>%
+  arrange(padj) %>%      
+  select(geneID, padj) %>% 
+  head()
 
-# Save merged matrix
-write.csv(merged_counts, file.path(data_folder, "all_counts_matrix.csv"), row.names = TRUE)
+# Save results
+write.csv(samples_res_all, "D:/full_pipeline/samples_DESeq2_all_results.csv", row.names = TRUE)
+write.csv(samples_res_sig, "D:/full_pipeline/samples_DESeq2_sig_genes.csv", row.names = TRUE)
+write.csv(top6_genes, "D:/full_pipeline/samples_DESeq2_top6_genes.csv", row.names = FALSE)
 
-print("✅ Merged counts matrix saved to all_counts_matrix.csv")
+
+# Prepare significant gene list
+sig_genes <- rownames(samples_res_all)
+
+# If sig_genes are already gene symbols
+gene_symbols <- sig_genes
+
+# Convert SYMBOL → ENTREZID for KEGG
+entrez_ids <- mapIds(org.Hs.eg.db,
+                     keys = gene_symbols,
+                     column = "ENTREZID",
+                     keytype = "SYMBOL",
+                     multiVals = "first")
+
+# Remove NAs
+gene_symbols <- na.omit(gene_symbols)
+entrez_ids <- na.omit(entrez_ids)
+
+# GO Enrichment
+ego <- enrichGO(gene          = gene_symbols,
+                OrgDb         = org.Hs.eg.db,
+                keyType       = "SYMBOL",
+                ont           = "BP",
+                pAdjustMethod = "BH",
+                qvalueCutoff  = 0.05)
+# Save GO plot
+png("D:/full_pipeline/GO_enrichment_dotplot.png", width = 1200, height = 800, res = 150)
+dotplot(ego, showCategory = 20) + ggtitle("GO Enrichment (Biological Process)")
+dev.off()
+
+# Save GO results
+write.csv(as.data.frame(ego), "D:/full_pipeline/GO_enrichment_results1.csv", row.names = FALSE)
+
+# ---- KEGG Pathway Enrichment ----
+options(timeout = 600)
+ekegg <- enrichKEGG(gene         = entrez_ids,
+                    organism     = "hsa",
+                    pvalueCutoff = 0.05)
 
 
+# Save KEGG plot
+png("D:/full_pipeline/KEGG_enrichment_dotplot.png", width = 1200, height = 800, res = 150)
+dotplot(ekegg, showCategory = 20) + ggtitle("KEGG Pathway Enrichment")
+dev.off()
 
-## Make calData
-library(tidyverse)  # loads dplyr, readr, etc.
-library(purrr)      # make sure reduce() is available
+# Save KEGG results
+write.csv(as.data.frame(ekegg), "D:/full_pipeline/KEGG_enrichment_results1.csv", row.names = FALSE)
 
-# Folder containing all your featureCounts CSV files
-data_folder <- "D:/Thesis/demo/deg_data"
-
-# List all CSV files in the folder
-files <- list.files(path = data_folder, pattern = "_featurecounts\\.csv$", full.names = TRUE)
-
-# Function to read and keep only Geneid + counts column
-read_counts <- function(file) {
-  df <- read.csv(file)
-  df <- df[, c("Geneid", colnames(df)[ncol(df)])]
-  colnames(df)[2] <- tools::file_path_sans_ext(basename(file))
-  return(df)
-}
-
-# Read all files into a list
-df_list <- lapply(files, read_counts)
-
-# Merge all dataframes by Geneid using purrr::reduce
-merged_counts <- purrr::reduce(df_list, full_join, by = "Geneid")
-
-# Set Geneid as row names
-rownames(merged_counts) <- merged_counts$Geneid
-merged_counts <- merged_counts[, -1]
-
-# Save merged matrix
-write.csv(merged_counts, file.path(data_folder, "all_counts_matrix.csv"), row.names = TRUE)
-
-print("✅ Merged counts matrix saved to all_counts_matrix.csv")
-
+cat("GO and KEGG enrichment analysis completed. Results saved.\n")
