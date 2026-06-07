@@ -1,0 +1,501 @@
+```{r setup, include=FALSE}
+library(limma)
+library(edgeR)
+library(tidyverse)
+library(ggplot2)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(AnnotationDbi)
+library(enrichplot)
+library(pheatmap)
+library(RColorBrewer)
+library(matrixStats)
+library(stringr)
+library(data.table)
+library(dplyr)
+```
+
+
+```{r cars}
+counts <- read.csv("D:/full_pipeline/samples.csv",
+                   row.names = 1,
+                   check.names = FALSE)
+
+metadata <- read.csv("D:/full_pipeline/metadata.csv",
+                     row.names = 1)
+```
+
+
+
+```{r pressure, echo=FALSE}
+common <- intersect(colnames(counts), rownames(metadata))
+counts <- counts[, common, drop = FALSE]
+metadata <- metadata[common, , drop = FALSE]
+
+stopifnot(all(colnames(counts) == rownames(metadata)))
+```
+
+
+```{r pressure, echo=FALSE}
+metadata$tumor_grade <- as.character(metadata$tumor_grade)
+metadata$tumor_grade <- gsub("^0$", "G0", metadata$tumor_grade)
+metadata$tumor_grade <- gsub("^([1-9])$", "G\\1", metadata$tumor_grade)
+metadata$tumor_grade <- gsub("^GG", "G", metadata$tumor_grade)
+metadata$tumor_grade <- factor(metadata$tumor_grade)
+
+levels(metadata$tumor_grade)
+cat("Genes before filtering:", nrow(counts), "\n")
+```
+
+
+```{r pressure, echo=FALSE}
+keep <- rowSums(counts >= 10) >= 2
+counts <- counts[keep, ]
+
+cat("Genes after filtering:", nrow(counts), "\n")
+```
+
+
+```{r pressure, echo=FALSE}
+outdir_main <- "D:/limma"
+dir.create(outdir_main, showWarnings = FALSE, recursive = TRUE)
+```
+
+
+```{r pressure, echo=FALSE}
+y <- DGEList(counts = counts)
+y <- calcNormFactors(y, method = "TMM")
+```
+
+
+```{r pressure, echo=FALSE}
+design <- model.matrix(~ 0 + tumor_grade, data = metadata)
+colnames(design) <- levels(metadata$tumor_grade)
+```
+
+
+```{r pressure, echo=FALSE}
+norm_counts <- cpm(y, normalized.lib.sizes = TRUE)
+
+if ("CDK1" %in% rownames(norm_counts)) {
+  cdk1_expression_norm <- norm_counts["CDK1", , drop = FALSE]
+  write.csv(cdk1_expression_norm,
+            "D:/limma/CDK1_normalized_expression.csv",
+            row.names = TRUE)
+} else {
+  message("CDK1 not found in filtered count matrix.")
+}
+
+png("D:/limma/Dispersion_plot.png", width = 1800, height = 1200, res = 200)
+v <- voom(y, design, plot = TRUE)
+dev.off()
+
+vsd_mat <- v$E
+expr <- v$E
+
+write.csv(expr, "D:/limma/expression_matrix.csv")
+
+ann_col <- metadata[, "tumor_grade", drop = FALSE]
+ann_col <- ann_col[colnames(vsd_mat), , drop = FALSE]
+
+png("D:/limma/Sample_correlation_heatmap.png", width = 1800, height = 1200, res = 200)
+pheatmap(
+  cor(vsd_mat),
+  annotation_col = ann_col,
+  main = "Sample correlation (voom logCPM)"
+)
+dev.off()
+```
+
+
+```{r pressure, echo=FALSE}
+grades <- levels(metadata$tumor_grade)
+pairs <- combn(grades, 2, simplify = FALSE)
+
+contrast_names <- sapply(
+  pairs,
+  function(p) paste0(p[2], "_ vs _", p[1])
+)
+
+contrast_strings <- sapply(
+  pairs,
+  function(p) paste0(p[2], "-", p[1])
+)
+
+contrast_matrix <- makeContrasts(contrasts = contrast_strings, levels = design)
+colnames(contrast_matrix) <- contrast_names
+
+fit <- lmFit(v, design)
+fit2 <- contrasts.fit(fit, contrast_matrix)
+fit2 <- eBayes(fit2)
+
+master_deg_list <- list()
+all_list <- list()
+up_list <- list()
+down_list <- list()
+
+for (i in seq_along(contrast_names)) {
+
+  cn <- contrast_names[i]
+
+  cat("\n===========================\nProcessing contrast:", cn,
+      "\n===========================\n")
+
+  tt <- topTable(fit2,
+                 coef = i,
+                 number = Inf,
+                 sort.by = "none")
+
+  gene_names <- rownames(tt)
+res_df <- data.frame(
+    gene = gene_names,
+    log2FoldChange = tt$logFC,
+    lfcSE = fit2$stdev.unscaled[, i] * fit2$sigma,
+    AveExpr = tt$AveExpr,
+    stat = tt$t,
+    pvalue = tt$P.Value,
+    padj = tt$adj.P.Val,
+    B = tt$B,
+    baseMean = rowMeans(norm_counts[gene_names, , drop = FALSE]),
+    contrast = cn,
+    stringsAsFactors = FALSE
+  )
+
+res_sig <- res_df %>%
+    filter(!is.na(padj), padj < 0.05)
+
+  cat("Significant genes (padj < 0.05):", nrow(res_sig), "\n")
+
+write.csv(res_df,
+            paste0("D:/limma/DE_limma_full_", cn, ".csv"),
+            row.names = FALSE)
+
+  write.csv(res_sig,
+            paste0("D:/limma/DE_limma_sig_", cn, ".csv"),
+            row.names = FALSE)
+up_genes <- res_sig %>%
+    filter(log2FoldChange > 0) %>%
+    mutate(contrast = cn)
+
+  down_genes <- res_sig %>%
+    filter(log2FoldChange < 0) %>%
+    mutate(contrast = cn)
+
+  write.csv(up_genes,
+            paste0("D:/limma/UP_genes_", cn, ".csv"),
+            row.names = FALSE)
+
+  write.csv(down_genes,
+            paste0("D:/limma/DOWN_genes_", cn, ".csv"),
+            row.names = FALSE)
+
+png(paste0("D:/limma/MA_plot_limma_", cn, ".png"),
+      width = 1800, height = 1200, res = 200)
+  plotMD(fit2,
+         column = i,
+         status = res_df$padj < 0.05,
+         main = paste0("MA Plot (limma: ", cn, ")"))
+  abline(h = 0, col = "blue")
+  dev.off()
+
+volcano_df <- res_df %>%
+    mutate(
+      padj_plot = ifelse(is.na(padj), NA, pmax(padj, .Machine$double.xmin)),
+      neglog10padj = -log10(padj_plot)
+    )
+
+  volcano <- ggplot(volcano_df) +
+    geom_point(aes(x = log2FoldChange,
+                   y = neglog10padj,
+                   color = padj < 0.05),
+               alpha = 0.6) +
+    theme_bw() +
+    ggtitle(paste0("Volcano Plot (limma: ", cn, ")")) +
+    xlab("log2 fold change") +
+    ylab("-log10 adjusted p-value") +
+    theme(legend.position = "none",
+          plot.title = element_text(hjust = 0.5))
+
+  ggsave(paste0("D:/limma/Volcano_plot_limma_", cn, ".png"),
+         plot = volcano, width = 8, height = 6, dpi = 300)
+
+  # Heatmap for Top 50 DEGs
+  top_genes <- res_sig %>%
+    arrange(padj) %>%
+    slice_head(n = 50) %>%
+    pull(gene)
+
+  if (length(top_genes) >= 10) {
+    mat_top <- vsd_mat[top_genes, , drop = FALSE]
+
+    png(paste0("D:/limma/Heatmap_", cn, "_top_DEGs.png"),
+        width = 1500, height = 1200, res = 200)
+
+    pheatmap(mat_top,
+             scale = "row",
+             annotation_col = ann_col,
+             fontsize_row = 7,
+             main = paste("Top 50 DEGs Heatmap:", cn))
+
+    dev.off()
+  }
+
+  # Heatmap for all significant genes
+  if (nrow(res_sig) > 1) {
+    sig_genes <- res_sig$gene
+    sig_expr <- vsd_mat[sig_genes, , drop = FALSE]
+    sig_expr <- sig_expr[rowVars(sig_expr) > 0, , drop = FALSE]
+
+    if (nrow(sig_expr) > 1) {
+      pheatmap(
+        sig_expr,
+        scale = "row",
+        show_rownames = FALSE,
+        cluster_rows = TRUE,
+        annotation_col = ann_col,
+        color = colorRampPalette(brewer.pal(9, "YlOrRd"))(100),
+        filename = paste0("D:/limma/Heatmap_limma_sig_genes_", cn, ".png"),
+        width = 10,
+        height = 8
+      )
+    }
+  }
+
+  master_deg_list[[cn]] <- res_df
+  all_list[[cn]] <- res_df
+  up_list[[cn]] <- up_genes
+  down_list[[cn]] <- down_genes
+}
+
+
+```
+
+
+```{r pressure, echo=FALSE}
+combined_all <- bind_rows(master_deg_list)
+write.csv(combined_all,
+          "D:/limma/Combined_ALL_DEG_genes.csv",
+          row.names = FALSE)
+
+# Keep this file too, because your original code used a second similar filename
+write.csv(combined_all,
+          "D:/limma/Combined_ALL_DEGs.csv",
+          row.names = FALSE)
+
+combined_sig <- combined_all %>%
+  filter(!is.na(padj), padj < 0.05)
+
+write.csv(combined_sig,
+          "D:/limma/Combined_SIGNIFICANT_DEGs.csv",
+          row.names = FALSE)
+
+# ---------- Combined UP / DOWN / ALL ----------
+master_deg_df <- bind_rows(all_list) %>%
+  arrange(padj)
+
+up_df <- bind_rows(up_list) %>%
+  arrange(padj, desc(log2FoldChange))
+
+down_df <- bind_rows(down_list) %>%
+  arrange(padj, log2FoldChange)
+
+write.csv(master_deg_df,
+          "D:/limma/Combined_ALL_DEGs_sorted.csv",
+          row.names = FALSE)
+
+write.csv(up_df,
+          "D:/limma/Combined_UP_genes_sorted.csv",
+          row.names = FALSE)
+
+write.csv(down_df,
+          "D:/limma/Combined_DOWN_genes_sorted.csv",
+          row.names = FALSE)
+
+```
+
+
+```{r pressure, echo=FALSE}
+bio_deg <- master_deg_df[
+  !is.na(master_deg_df$padj) &
+    master_deg_df$padj < 0.05 &
+    abs(master_deg_df$log2FoldChange) >= 1,
+]
+
+# Remove duplicate genes, keep the most significant
+bio_deg <- bio_deg[order(bio_deg$padj), ]
+bio_deg <- bio_deg[!duplicated(bio_deg$gene), ]
+
+bio_up <- bio_deg[bio_deg$log2FoldChange > 0, ]
+bio_down <- bio_deg[bio_deg$log2FoldChange < 0, ]
+
+bio_up <- bio_up[order(bio_up$padj, -bio_up$log2FoldChange), ]
+bio_down <- bio_down[order(bio_down$padj, bio_down$log2FoldChange), ]
+
+fwrite(bio_deg,
+       "D:/limma/Biological_DEGs_sorted.csv")
+fwrite(bio_up,
+       "D:/limma/Biological_UP_genes_sorted.csv")
+fwrite(bio_down,
+       "D:/limma/Biological_DOWN_genes_sorted.csv")
+
+# ---------- Enrichment ----------
+outdir_enrich <- "D:/limma/ENRICHMENT"
+dir.create(outdir_enrich, showWarnings = FALSE, recursive = TRUE)
+
+run_enrichment <- function(genes, label, prefix) {
+
+  genes <- unique(na.omit(genes))
+  if (length(genes) < 10) return(NULL)
+
+  # GO BP
+  ego <- enrichGO(
+    gene = genes,
+    OrgDb = org.Hs.eg.db,
+    keyType = "SYMBOL",
+    ont = "BP",
+    pAdjustMethod = "BH",
+    readable = TRUE
+  )
+
+  ego_df <- as.data.frame(ego)
+  if (!is.null(ego) && nrow(ego_df) > 0) {
+    write.csv(ego_df,
+              file.path(outdir_enrich, paste0(prefix, "_GO_", label, ".csv")),
+              row.names = FALSE)
+
+    png(file.path(outdir_enrich, paste0(prefix, "_GO_", label, ".png")),
+        width = 1500, height = 1000, res = 200)
+    print(dotplot(ego, showCategory = 20) +
+            ggtitle(paste(prefix, "GO BP -", label)))
+    dev.off()
+  }
+
+  # KEGG
+  entrez <- mapIds(org.Hs.eg.db,
+                   keys = genes,
+                   column = "ENTREZID",
+                   keytype = "SYMBOL",
+                   multiVals = "first") |> na.omit()
+
+  entrez <- unique(entrez)
+  if (length(entrez) < 10) return(NULL)
+
+  ekegg <- enrichKEGG(
+    gene = entrez,
+    organism = "hsa"
+  )
+
+  ekegg_df <- as.data.frame(ekegg)
+  if (!is.null(ekegg) && nrow(ekegg_df) > 0) {
+    write.csv(ekegg_df,
+              file.path(outdir_enrich, paste0(prefix, "_KEGG_", label, ".csv")),
+              row.names = FALSE)
+
+    png(file.path(outdir_enrich, paste0(prefix, "_KEGG_", label, ".png")),
+        width = 1500, height = 1000, res = 200)
+    print(dotplot(ekegg, showCategory = 20) +
+            ggtitle(paste(prefix, "KEGG -", label)))
+    dev.off()
+  }
+}
+
+# ---------- Pairwise enrichment using UP and DOWN files ----------
+deg_files <- list.files("D:/limma",
+                        pattern = "^UP_|^DOWN_",
+                        full.names = TRUE)
+
+for (f in deg_files) {
+
+  df <- read.csv(f)
+  genes <- df$gene
+
+  label <- ifelse(grepl("^UP_", basename(f)), "UP", "DOWN")
+
+  contrast <- gsub(".csv", "", basename(f))
+  contrast <- gsub("^UP_|^DOWN_", "", contrast)
+
+  prefix <- paste0("PAIRWISE_", contrast)
+
+  run_enrichment(genes, label, prefix)
+}
+
+# ---------- Biological enrichment ----------
+bio_up <- read.csv("D:/limma/Biological_UP_genes_sorted.csv")
+bio_down <- read.csv("D:/limma/Biological_DOWN_genes_sorted.csv")
+
+run_enrichment(bio_up$gene, "UP", "BIOLOGICAL")
+run_enrichment(bio_down$gene, "DOWN", "BIOLOGICAL")
+
+# ---------- Combined enrichment ----------
+comb_up <- read.csv("D:/limma/Combined_UP_genes_sorted.csv")
+comb_down <- read.csv("D:/limma/Combined_DOWN_genes_sorted.csv")
+
+run_enrichment(comb_up$gene, "UP", "COMBINED")
+run_enrichment(comb_down$gene, "DOWN", "COMBINED")
+
+cat("\nALL GO + KEGG ENRICHMENTS COMPLETED SUCCESSFULLY\n")
+
+# ---------- Top genes ----------
+top50 <- master_deg_df %>%
+  filter(!is.na(padj)) %>%
+  arrange(padj, desc(abs(log2FoldChange))) %>%
+  distinct(gene, .keep_all = TRUE) %>%
+  slice_head(n = 50)
+
+write.csv(top50,
+          "D:/limma/Top50_most_significant_genes.csv",
+          row.names = FALSE)
+
+top20_up <- up_df %>%
+  arrange(padj, desc(log2FoldChange)) %>%
+  slice_head(n = 20)
+
+write.csv(top20_up,
+          "D:/limma/Top20_UP_genes.csv",
+          row.names = FALSE)
+
+top20_down <- down_df %>%
+  arrange(padj, log2FoldChange) %>%
+  slice_head(n = 20)
+
+write.csv(top20_down,
+          "D:/limma/Top20_DOWN_genes.csv",
+          row.names = FALSE)
+
+# ---------- Stage progression genes ----------
+grade_means <- data.frame(
+  gene = rownames(vsd_mat),
+  sapply(grades, function(g) {
+    idx <- metadata$tumor_grade == g
+    if (sum(idx) >= 2) {
+      rowMeans(vsd_mat[, idx, drop = FALSE])
+    } else {
+      rep(NA, nrow(vsd_mat))
+    }
+  }),
+  check.names = FALSE
+)
+
+expr_mat <- as.matrix(grade_means[, -1])
+
+stage_prog <- grade_means[
+  apply(expr_mat, 1, function(x) {
+    x <- x[!is.na(x)]
+    length(x) >= 2 &&
+      (all(diff(x) > 0) || all(diff(x) < 0))
+  }),
+]
+
+write.csv(stage_prog,
+          "D:/limma/Stage_progression_genes.csv",
+          row.names = FALSE)
+
+cat("\nLIMMA-VOOM PIPELINE COMPLETED SUCCESSFULLY\n")
+
+```
+
+
+```{r pressure, echo=FALSE}
+```
+
+
